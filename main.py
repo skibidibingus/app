@@ -745,24 +745,343 @@ def delete_key(key_id):
 with app.app_context():
     db.create_all()
     seed_data()
-################################## start
-page_html = """
+import os
+import random
+import string
+import secrets
+from datetime import datetime, timedelta
+from flask import Flask, request, redirect, url_for, flash, Response
+from flask import render_template_string
+from flask_sqlalchemy import SQLAlchemy
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = os.environ.get('SESSION_SECRET', 'CHANGE_THIS')
+
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if DATABASE_URL:
+    app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
+else:
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///eaglehub_complex.db'
+
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+########################################
+# Existing Models from your code
+########################################
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Project(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), unique=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Script(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=False)
+    name = db.Column(db.String(100), nullable=False)
+    version = db.Column(db.String(20), nullable=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class BlockedIP(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    ip_address = db.Column(db.String(50), nullable=False)
+    reason = db.Column(db.String(200), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class KillSwitch(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    active = db.Column(db.Boolean, default=False)
+
+class Revenue(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    month = db.Column(db.String(20), nullable=False)
+    amount = db.Column(db.Integer, nullable=False)
+
+class Key(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    value = db.Column(db.String(64), unique=True, nullable=False)
+    hwid = db.Column(db.String(128), nullable=True)
+    expires_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+########################################
+# New Models for Loader Security
+########################################
+class MainScript(db.Model):
+    """
+    Stores your final script in multiple 'chunks' for multi-step loading.
+    chunk_index = 1,2,3,... 
+    code = the raw Lua code (no obfuscation here).
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    chunk_index = db.Column(db.Integer, default=1)
+    code = db.Column(db.Text, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class EphemeralRoute(db.Model):
+    """
+    Short-lived route for each chunk. 
+    route_name = random string, token = random hex, 
+    chunk_index = which chunk to serve, 
+    single_use = if True, we delete it after usage
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    route_name = db.Column(db.String(50), unique=True, nullable=False)
+    token = db.Column(db.String(64), nullable=False)
+    chunk_index = db.Column(db.Integer, default=1)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_in = db.Column(db.Integer, default=120)
+    single_use = db.Column(db.Boolean, default=True)
+
+########################################
+# DB init & seed
+########################################
+def seed_data():
+    # ... same as your original seed logic
+    if not User.query.first():
+        u = User(username='demo')
+        db.session.add(u)
+    if not Project.query.first():
+        p = Project(name="EagleHub Master Project")
+        db.session.add(p)
+        db.session.commit()
+        s1 = Script(project_id=p.id, name="Roofing Energy Visualizer", version="v1.0")
+        s2 = Script(project_id=p.id, name="PetMaster", version="v1.2")
+        s3 = Script(project_id=p.id, name="Jailbreak Auto [Premium]", version="v0.9.2")
+        db.session.add_all([s1, s2, s3])
+
+    if not BlockedIP.query.first():
+        b1 = BlockedIP(ip_address="192.168.0.15", reason="Suspicious activity")
+        b2 = BlockedIP(ip_address="10.0.0.99", reason="Excessive requests")
+        db.session.add_all([b1, b2])
+
+    if not KillSwitch.query.first():
+        ks = KillSwitch(active=False)
+        db.session.add(ks)
+
+    if not Revenue.query.first():
+        import random
+        months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug"]
+        for m in months:
+            r = Revenue(month=m, amount=random.randint(300, 2000))
+            db.session.add(r)
+
+    if not Key.query.first():
+        from datetime import timedelta
+        k1 = Key(value="ABCDEF1234567890", hwid=None, expires_at=None)
+        k2 = Key(value="HELLO987654321", hwid="HWID-TEST", expires_at=datetime.utcnow()+timedelta(days=7))
+        db.session.add_all([k1, k2])
+
+    # Optionally seed some main script chunks
+    if not MainScript.query.first():
+        c1 = MainScript(chunk_index=1, code="print('Hello from chunk #1!')", updated_at=datetime.utcnow())
+        c2 = MainScript(chunk_index=2, code="print('Hello from chunk #2! This is the final part!')", updated_at=datetime.utcnow())
+        db.session.add_all([c1, c2])
+
+    db.session.commit()
+
+with app.app_context():
+    db.create_all()
+    seed_data()
+
+########################################
+# big_html (with "Loader" item in sidebar)
+########################################
+big_html = r"""
 <!doctype html>
-<html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8"/>
+    <title>EagleHub</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
+
+    <!-- 1) Icon set (Bootstrap Icons) -->
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css"
+    />
+
+    <style>
+      body {
+        margin: 0;
+        background-color: #1f1f1f;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        color: #eee;
+      }
+      .sidebar {
+        position: fixed;
+        top: 0; left: 0;
+        width: 80px;
+        height: 100vh;
+        background-color: #27293d;
+        overflow: hidden;
+        transition: width 0.3s;
+        z-index: 999;
+      }
+      .sidebar:hover {
+        width: 240px;
+      }
+      .sidebar ul {
+        list-style-type: none;
+        padding: 0; margin: 0;
+      }
+      .sidebar ul li {
+        display: flex;
+        align-items: center;
+        padding: 15px 10px;
+        color: #bbb;
+        cursor: pointer;
+        transition: background-color 0.2s, transform 0.2s;
+      }
+      .sidebar ul li i {
+        font-size: 1.2rem;
+        margin-right: 15px;
+      }
+      .sidebar ul li span {
+        white-space: nowrap;
+        opacity: 0;
+        transition: opacity 0.3s;
+      }
+      .sidebar:hover ul li span {
+        opacity: 1;
+      }
+      .sidebar ul li:hover {
+        background-color: #343759;
+        transform: translateX(5px);
+      }
+      .main-content {
+        margin-left: 80px;
+        padding: 20px;
+        transition: margin-left 0.3s;
+      }
+      .navbar {
+        background-color: #4e1580;
+      }
+      .navbar-brand {
+        font-weight: 600;
+      }
+      .card {
+        background-color: #2a2a2a;
+        border: none;
+      }
+      .card .card-body {
+        color: #ddd;
+      }
+      .table-dark {
+        background-color: #2a2a2a;
+      }
+      .table-dark th,
+      .table-dark td {
+        border-color: #444;
+      }
+      .btn-purple {
+        background-color: #6a0dad;
+        border-color: #6a0dad;
+      }
+      .btn-purple:hover {
+        background-color: #7e39ab;
+        border-color: #7e39ab;
+      }
+    </style>
+  </head>
   <body>
-    <ul>
-      <li onclick="window.location.href='/loader_admin'">Loader Admin</li>
-    </ul>
+    <!-- Left sidebar -->
+    <div class="sidebar">
+      <ul>
+        <li onclick="window.location.href='/'">
+          <i class="bi bi-house-fill"></i>
+          <span>Dashboard</span>
+        </li>
+        <li onclick="window.location.href='/scripts/1'">
+          <i class="bi bi-code-slash"></i>
+          <span>Scripts</span>
+        </li>
+        <li onclick="window.location.href='/blocked_ips'">
+          <i class="bi bi-shield-exclamation"></i>
+          <span>Blocked IPs</span>
+        </li>
+        <li onclick="window.location.href='/killswitch'">
+          <i class="bi bi-power"></i>
+          <span>Kill Switch</span>
+        </li>
+        <li onclick="window.location.href='/keys'">
+          <i class="bi bi-key"></i>
+          <span>Key Manager</span>
+        </li>
+        <!-- NEW LOADER OPTION -->
+        <li onclick="window.location.href='/loader_admin'">
+          <i class="bi bi-file-earmark-lock"></i>
+          <span>Loader</span>
+        </li>
+      </ul>
+    </div>
+
+    <nav class="navbar navbar-expand-lg navbar-dark mb-3">
+      <a class="navbar-brand" href="#">EagleHub</a>
+      <div class="ml-auto"></div>
+    </nav>
+
+    <div class="main-content">
+      {% block content %}{% endblock %}
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
   </body>
 </html>
 """
 
+########################################
+# Basic environment & ban checks
+########################################
+def environment_check():
+    # If hooking or debug functions found in builtins, mark suspicious
+    suspicious_names = ["hookfunction", "debug.setupvalue", "hookmetamethod"]
+    for name in suspicious_names:
+        if name in dir(__builtins__):
+            return True
+    return False
+
+def is_banned(ip, hwid=None):
+    # You can store banned IP/ HWID in BlockedIP or a separate table
+    blocked = BlockedIP.query.filter_by(ip_address=ip).first()
+    if blocked:
+        return True
+    # If you store HWID in same table or separate logic, do that here
+    return False
+
+def log_usage(route_name, ip, suspicious=False):
+    # Minimal usage logging. You could store in a table or print logs.
+    print(f"[USAGE] route={route_name}, ip={ip}, suspicious={suspicious}")
+
+########################################
+# Dashboard route (simple example)
+########################################
+@app.route('/')
+def dashboard():
+    # Minimal
+    page_content = "<h3>Welcome to EagleHub Dashboard</h3>"
+    return render_template_string(
+        big_html,
+        content=page_content
+    )
+
+########################################
+# LOADER ADMIN
+########################################
 @app.route('/loader_admin', methods=['GET','POST'])
 def loader_admin():
-    return "Loader Admin Page!"
-
+    """
+    Manage multi-chunk script in MainScript table.
+    """
     if request.method == 'POST':
-        # If user is adding/updating a chunk
+        from datetime import datetime
         chunk_idx = int(request.form.get('chunk_index', 1))
         code = request.form.get('code', '')
         ms = MainScript.query.filter_by(chunk_index=chunk_idx).first()
@@ -773,67 +1092,74 @@ def loader_admin():
             ms = MainScript(chunk_index=chunk_idx, code=code, updated_at=datetime.utcnow())
             db.session.add(ms)
         db.session.commit()
-        flash(f"Chunk #{chunk_idx} updated or created!", "success")
+        flash(f"Chunk #{chunk_idx} updated!", "success")
         return redirect(url_for('loader_admin'))
 
-    # Display existing chunks
-    chunks = MainScript.query.order_by(MainScript.chunk_index.asc()).all()
-    chunk_list_html = ""
-    for c in chunks:
-        chunk_list_html += f"<h5>Chunk #{c.chunk_index}</h5><pre>{c.code}</pre><hr>"
+    # Show existing chunks
+    all_chunks = MainScript.query.order_by(MainScript.chunk_index.asc()).all()
+    chunk_html = ""
+    for c in all_chunks:
+        chunk_html += f"<h5>Chunk #{c.chunk_index}</h5><pre>{c.code}</pre><hr>"
 
     page_html = f"""
 <h3>Loader Admin</h3>
-<p>This page manages the script in multiple chunks. 
-For strong security, also obfuscate each chunk externally.</p>
+<p>Manage script chunks. For stronger security (like Luarmor), 
+you can obfuscate each chunk externally.</p>
 
 <form method="POST">
   <div class="form-group">
     <label>Chunk Index</label>
-    <input type="number" name="chunk_index" class="form-control" value="1" />
+    <input type="number" name="chunk_index" class="form-control" value="1">
   </div>
   <div class="form-group">
-    <label>Lua Code (obfuscated if possible)</label>
+    <label>Lua Code</label>
     <textarea name="code" rows="10" class="form-control"></textarea>
   </div>
-  <button type="submit" class="btn btn-success btn-sm">Save Chunk</button>
+  <button type="submit" class="btn btn-success">Save/Update Chunk</button>
 </form>
 <hr/>
-<h4>Current Chunks</h4>
-{chunk_list_html}
+<h4>Existing Chunks</h4>
+{chunk_html}
 """
-    return render_template_string(big_html, page='loader_admin', dashboard_content=page_html)
+    return render_template_string(big_html, content=page_html)
 
+########################################
+# CREATE EPHEMERAL ROUTES
+########################################
+class EphemeralRoute(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    route_name = db.Column(db.String(50), unique=True, nullable=False)
+    token = db.Column(db.String(64), nullable=False)
+    chunk_index = db.Column(db.Integer, default=1)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_in = db.Column(db.Integer, default=120)
+    single_use = db.Column(db.Boolean, default=True)
 
-############################################################
-# CREATE EPHEMERAL ROUTES FOR THE LOADER (multi-step approach)
-############################################################
+def generate_random_route(prefix="chunk_"):
+    suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
+    return prefix + suffix
+
 @app.route('/loader_create')
 def loader_create():
     """
-    This route dynamically creates ephemeral routes for each chunk 
-    in the MainScript. Each route is short-lived, single-use, 
-    and requires a token, plus ?key=... & ?hwid=... in the query.
-    The user calls them in ascending chunk_index order.
+    Generates ephemeral routes for each chunk in MainScript. 
+    The user calls them in ascending chunk_index order with 
+    ?key=...&hwid=...&token=thatToken
     """
-    # environment check
     if environment_check():
         return "Suspicious environment. Aborting ephemeral route creation.", 403
 
-    # Suppose your MainScript has multiple chunks
     chunks = MainScript.query.order_by(MainScript.chunk_index.asc()).all()
     if not chunks:
-        return "No script chunks found. Add some in /loader_admin."
+        return "No script chunks found. Add some in loader_admin."
 
-    route_infos = []
+    route_list = ""
     for c in chunks:
         route_name = generate_random_route(f"chunk_{c.chunk_index}_")
         token_str = secrets.token_hex(16)
-        # ephemeral route DB row
         er = EphemeralRoute(
             route_name=route_name,
             token=token_str,
-            stage=1,               # or stage=c.chunk_index, if you prefer
             chunk_index=c.chunk_index,
             created_at=datetime.utcnow(),
             expires_in=120,
@@ -841,87 +1167,74 @@ def loader_create():
         )
         db.session.add(er)
         db.session.commit()
-        route_infos.append((c.chunk_index, route_name, token_str))
-
-    # Show them to the admin
-    route_list = ""
-    for idx, rname, tkn in route_infos:
-        route_list += f"<li>Chunk #{idx}: /{rname}?key=YOUR_KEY&hwid=YOUR_HWID&token={tkn}</li>"
+        route_list += f"<li>Chunk #{c.chunk_index}: /{route_name}?key=YOUR_KEY&hwid=YOUR_HWID&token={token_str}</li>"
 
     page_html = f"""
 <h3>Ephemeral Loader Routes Created</h3>
-<ul>
-{route_list}
-</ul>
-<p>They expire in 120 seconds, single-use. The user must call them in ascending chunk index order.
-If you want to embed chunk2 route inside chunk1, you'll do that in the chunk code itself.</p>
+<ul>{route_list}</ul>
+<p>They expire in 120 seconds, single-use. 
+Call them in ascending chunk index order. 
+If you want a hidden sequence, embed chunk2's route inside chunk1 code, etc.</p>
 """
-    return render_template_string(big_html, page='loader_create', dashboard_content=page_html)
+    return render_template_string(big_html, content=page_html)
 
-
-############################################################
-# CATCH-ALL FOR LOADER ROUTES
-############################################################
+########################################
+# CATCH-ALL LOADER
+########################################
 @app.route('/<path:loader_route>')
 def loader_catch_all(loader_route):
     """
-    If loader_route matches an EphemeralRoute, we do the multi-step logic:
-      - environment checks
-      - ban checks
-      - ephemeral token checks
-      - fetch the chunk code from MainScript
-      - triple base64 or any advanced measure
-      - illusions / partial server logic
-      - single-use route if desired
+    If loader_route matches EphemeralRoute, we do multi-step logic:
+    environment checks, ban checks, ephemeral token check, 
+    triple base64 code, illusions, single use, etc.
     """
+    from datetime import datetime
     er = EphemeralRoute.query.filter_by(route_name=loader_route).first()
     if not er:
+        # Not found
         return "404 Not Found", 404
 
     # environment check
     if environment_check():
-        # log usage as suspicious
         log_usage(er.route_name, request.remote_addr, suspicious=True)
-        return "Suspicious environment. Aborting loader route usage.", 403
+        return "Suspicious environment. Aborting route usage.", 403
 
-    # check ban
+    # ban check
     user_hwid = request.args.get('hwid', '')
     if is_banned(request.remote_addr, user_hwid):
-        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        log_usage(er.route_name, request.remote_addr, suspicious=True)
         return "You are banned from using this service.", 403
 
-    # check expiry
+    # expiry check
     delta = (datetime.utcnow() - er.created_at).total_seconds()
     if delta > er.expires_in:
-        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        log_usage(er.route_name, request.remote_addr, suspicious=True)
         return "Ephemeral route expired", 403
 
-    # check token
+    # token check
     user_token = request.args.get('token', '')
     if user_token != er.token:
-        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
-        return "Invalid token for ephemeral route", 403
+        log_usage(er.route_name, request.remote_addr, suspicious=True)
+        return "Invalid token", 403
 
-    # check key param
+    # key check
     user_key = request.args.get('key', '')
     if not user_key:
-        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        log_usage(er.route_name, request.remote_addr, suspicious=True)
         return "Missing key param", 400
-
-    # validate key
+    from datetime import datetime
     kobj = Key.query.filter_by(value=user_key).first()
     if not kobj:
-        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        log_usage(er.route_name, request.remote_addr, suspicious=True)
         return "Invalid key", 403
     if kobj.expires_at and datetime.utcnow() > kobj.expires_at:
-        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        log_usage(er.route_name, request.remote_addr, suspicious=True)
         return "Key expired", 403
 
-    # get the chunk from MainScript
-    chunk_idx = er.chunk_index
-    ms = MainScript.query.filter_by(chunk_index=chunk_idx).first()
+    # get chunk code
+    ms = MainScript.query.filter_by(chunk_index=er.chunk_index).first()
     if not ms:
-        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        log_usage(er.route_name, request.remote_addr, suspicious=True)
         return "No script chunk found for this index", 500
 
     # triple base64 + illusions
@@ -951,11 +1264,19 @@ local illusionsB = "{illusionsB}"
 loadstring(final)()
 """
 
-    # single use
+    # single use?
     if er.single_use:
         db.session.delete(er)
         db.session.commit()
 
-    # log usage normal
-    log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=False)
+    # normal usage
+    log_usage(er.route_name, request.remote_addr, suspicious=False)
     return Response(final_lua, mimetype='text/plain')
+
+########################################
+# KEY MANAGER, BLOCKED IP, KILLSWITCH, ETC. (Truncated)
+########################################
+# You can keep your existing routes for /blocked_ips, /killswitch, /keys, etc.
+
+if __name__ == '__main__':
+    app.run(debug=True, host="0.0.0.0", port=5000)
