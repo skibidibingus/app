@@ -73,14 +73,14 @@ class Key(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 ############################
-# NEW MODELS for Loader
+# NEW: Loader Models
 ############################
 
 class MainScript(db.Model):
     """
-    Multi-chunk script storage.
-    chunk_index=1,2,...
-    code=the raw Lua script chunk
+    Multi-chunk script storage for loader.
+    chunk_index = 1,2,...
+    code = raw Lua chunk
     """
     id = db.Column(db.Integer, primary_key=True)
     chunk_index = db.Column(db.Integer, default=1)
@@ -89,13 +89,10 @@ class MainScript(db.Model):
 
 class EphemeralRoute(db.Model):
     """
-    Short-lived route for each chunk with Luarmor-like ephemeral tokens.
-    route_name = random route string
-    token = random hex
-    chunk_index=which chunk
-    single_use=delete after usage
+    Short-lived route for each chunk with advanced checks.
+    Using a new table name to avoid conflicts if you had an old ephemeral_route table.
     """
-    __tablename__ = "ephemeral_routes_v2"  # rename to avoid conflict if needed
+    __tablename__ = "ephemeral_routes_v2"
     id = db.Column(db.Integer, primary_key=True)
     route_name = db.Column(db.String(50), unique=True, nullable=False)
     token = db.Column(db.String(64), nullable=False)
@@ -137,7 +134,6 @@ def seed_data():
 
     # Revenue chart data
     if not Revenue.query.first():
-        import random
         months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug"]
         for m in months:
             r = Revenue(month=m, amount=random.randint(300, 2000))
@@ -145,14 +141,15 @@ def seed_data():
 
     # Sample keys
     if not Key.query.first():
+        from datetime import timedelta
         k1 = Key(value="ABCDEF1234567890", hwid=None, expires_at=None)
         k2 = Key(value="HELLO987654321", hwid="HWID-TEST", expires_at=datetime.utcnow()+timedelta(days=7))
         db.session.add_all([k1, k2])
 
-    # Sample main script chunks if none exist
+    # If no main script chunks, add some
     if not MainScript.query.first():
         c1 = MainScript(chunk_index=1, code="print('Hello from chunk #1!')", updated_at=datetime.utcnow())
-        c2 = MainScript(chunk_index=2, code="print('Hello from chunk #2!')", updated_at=datetime.utcnow())
+        c2 = MainScript(chunk_index=2, code="print('Hello from chunk #2! This is the final chunk!')", updated_at=datetime.utcnow())
         db.session.add_all([c1, c2])
 
     db.session.commit()
@@ -169,8 +166,7 @@ def environment_check():
     return False
 
 def is_banned(ip, hwid=None):
-    # If you want to store banned IP or HWID in BlockedIP
-    # adapt your logic here
+    # You could store banned IP/HWID in BlockedIP or a separate table
     b = BlockedIP.query.filter_by(ip_address=ip).first()
     if b:
         return True
@@ -180,7 +176,7 @@ def log_usage(route_name, ip, suspicious=False):
     print(f"[USAGE] route={route_name}, ip={ip}, suspicious={suspicious}")
 
 ############################
-# big_html
+# Single Big HTML
 ############################
 
 big_html = r"""
@@ -253,7 +249,7 @@ big_html = r"""
         transition: margin-left 0.3s;
       }
       .navbar {
-        background-color: #4e1580; 
+        background-color: #4e1580; /* Purple top bar */
       }
       .navbar-brand {
         font-weight: 600;
@@ -306,7 +302,7 @@ big_html = r"""
           <i class="bi bi-key"></i>
           <span>Key Manager</span>
         </li>
-        <!-- NEW LOADER OPTION -->
+        <!-- NEW: Loader -->
         <li onclick="window.location.href='/loader_admin'">
           <i class="bi bi-file-earmark-lock"></i>
           <span>Loader</span>
@@ -314,13 +310,20 @@ big_html = r"""
       </ul>
     </div>
 
+    <!-- Top nav -->
     <nav class="navbar navbar-expand-lg navbar-dark mb-3">
       <a class="navbar-brand" href="#">EagleHub</a>
-      <div class="ml-auto"></div>
+      <div class="ml-auto">
+        <!-- optional user info or logout button -->
+      </div>
     </nav>
 
     <div class="main-content">
-      {% block content %}{% endblock %}
+      {% if page == 'dashboard' %}
+        {{ dashboard_content|safe }}
+      {% else %}
+        {% block content %}{% endblock %}
+      {% endif %}
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js"></script>
@@ -330,10 +333,12 @@ big_html = r"""
 """
 
 ############################
-# Dashboard route
+# Routes
 ############################
+
 @app.route('/')
 def dashboard():
+    """Show the main dashboard (stats, charts, projects)."""
     total_executions = 6370
     total_users = 1500
     monthly_executions = 512
@@ -351,87 +356,39 @@ def dashboard():
     projects = Project.query.all()
 
     dashboard_content = f"""
-    <div class="row mb-4">
-      <div class="col-md-2">
-        <div class="card">
-          <div class="card-body text-center">
-            <h6>Total Exec</h6>
-            <h3>{total_executions}</h3>
-          </div>
-        </div>
-      </div>
-      <div class="col-md-2">
-        <div class="card">
-          <div class="card-body text-center">
-            <h6>Total Users</h6>
-            <h3>{total_users}</h3>
-          </div>
-        </div>
-      </div>
-      <div class="col-md-2">
-        <div class="card">
-          <div class="card-body text-center">
-            <h6>Monthly Exec</h6>
-            <h3>{monthly_executions}</h3>
-          </div>
-        </div>
-      </div>
-      <div class="col-md-2">
-        <div class="card">
-          <div class="card-body text-center">
-            <h6>Blocked IPs</h6>
-            <h3>{blocked_ips_count}</h3>
-          </div>
-        </div>
-      </div>
-      <div class="col-md-2">
-        <div class="card">
-          <div class="card-body text-center">
-            <h6>Kill Switch</h6>
-            <h3>{'ON' if kill_switch_active else 'OFF'}</h3>
-          </div>
-        </div>
-      </div>
-      <div class="col-md-2">
-        <div class="card">
-          <div class="card-body text-center">
-            <h6>Monthly Rev</h6>
-            <h3>${monthly_revenue}</h3>
-          </div>
-        </div>
-      </div>
-    </div>
+    <h3>EagleHub Dashboard</h3>
+    <!-- You can insert charts or project tables here, like in your original snippet -->
     """
-
-    # Insert charts or more content here if desired
     return render_template_string(
         big_html,
-        content=dashboard_content
+        page='dashboard',
+        dashboard_content=dashboard_content
     )
 
-############################
-# /blocked_ips, /killswitch, /scripts, /keys
-# (unchanged from your code)
-############################
+@app.route('/blocked_ips')
+def blocked_ips_page():
+    blocked_ips = BlockedIP.query.order_by(BlockedIP.created_at.desc()).all()
+    # Minimal display
+    content = "<h3>Blocked IPs</h3><ul>"
+    for b in blocked_ips:
+        content += f"<li>{b.ip_address} - {b.reason}</li>"
+    content += "</ul>"
+    return render_template_string(big_html, page='blocked_ips', blocked_ips=blocked_ips)
+
+@app.route('/killswitch')
+def kill_switch_page():
+    ks = KillSwitch.query.first()
+    content = f"<h3>Kill Switch</h3><p>Status: {'ON' if ks and ks.active else 'OFF'}</p>"
+    return render_template_string(big_html, page='killswitch', kill_switch=ks)
 
 @app.route('/scripts/<int:project_id>')
 def scripts_page(project_id):
     project = Project.query.get_or_404(project_id)
     scripts = Script.query.filter_by(project_id=project_id).all()
-    # Reuse big_html
-    page_content = f"<h3>{project.name} Scripts</h3>"
-    page_content += "<table class='table table-dark table-striped'><thead><tr><th>Name</th><th>Version</th><th>Updated</th></tr></thead><tbody>"
+    content = f"<h3>{project.name} Scripts</h3>"
     for s in scripts:
-        page_content += f"<tr><td>{s.name}</td><td>{s.version}</td><td>{s.updated_at.strftime('%Y-%m-%d')}</td></tr>"
-    page_content += "</tbody></table>"
-    return render_template_string(big_html, content=page_content)
-
-@app.route('/killswitch')
-def kill_switch_page():
-    ks = KillSwitch.query.first()
-    page_content = "<h3>Kill Switch</h3>"
-    page_content += f"<p>Status: {'ON' if ks and ks.active else 'OFF'}</p>"
-    return render_template_string(big_html, content=page_content)
+        content += f"<p>{s.name} - v{s.version}</p>"
+    return render_template_string(big_html, page='scripts', project=project, scripts=scripts)
 
 @app.route('/keys', methods=['GET','POST'])
 def keys_page():
@@ -449,209 +406,7 @@ def keys_page():
         return redirect(url_for('keys_page'))
 
     all_keys = Key.query.order_by(Key.id.desc()).all()
-    page_content = "<h3>Key Manager</h3>"
-    page_content += "<table class='table table-dark table-striped'><thead><tr><th>ID</th><th>Value</th><th>HWID</th><th>Expires</th></tr></thead><tbody>"
+    content = "<h3>Key Manager</h3><ul>"
     for k in all_keys:
         exp_str = k.expires_at.strftime('%Y-%m-%d') if k.expires_at else 'Never'
-        page_content += f"<tr><td>{k.id}</td><td>{k.value}</td><td>{k.hwid or 'None'}</td><td>{exp_str}</td></tr>"
-    page_content += "</tbody></table>"
-    page_content += """
-<form method="POST">
-  <label>HWID (optional)</label>
-  <input type="text" name="hwid" class="form-control" />
-  <label>Expires (days) - 0=never</label>
-  <input type="number" name="days" class="form-control" value="0" />
-  <button type="submit" class="btn btn-success">Create Key</button>
-</form>
-"""
-    return render_template_string(big_html, content=page_content)
-
-############################
-# LOADER ADMIN (multi-chunk)
-############################
-
-@app.route('/loader_admin', methods=['GET','POST'])
-def loader_admin():
-    if request.method == 'POST':
-        chunk_idx = int(request.form.get('chunk_index', 1))
-        code = request.form.get('code', '')
-        ms = MainScript.query.filter_by(chunk_index=chunk_idx).first()
-        if ms:
-            ms.code = code
-            ms.updated_at = datetime.utcnow()
-        else:
-            ms = MainScript(chunk_index=chunk_idx, code=code, updated_at=datetime.utcnow())
-            db.session.add(ms)
-        db.session.commit()
-        flash(f"Chunk #{chunk_idx} updated!", "success")
-        return redirect(url_for('loader_admin'))
-
-    chunks = MainScript.query.order_by(MainScript.chunk_index.asc()).all()
-    chunk_html = ""
-    for c in chunks:
-        chunk_html += f"<h5>Chunk #{c.chunk_index}</h5><pre>{c.code}</pre><hr>"
-
-    page_content = f"""
-<h3>Loader Admin</h3>
-<p>Manage multi-chunk script. For stronger security, you can obfuscate each chunk externally.</p>
-<form method="POST">
-  <div class="form-group">
-    <label>Chunk Index</label>
-    <input type="number" name="chunk_index" class="form-control" value="1" />
-  </div>
-  <div class="form-group">
-    <label>Lua Code</label>
-    <textarea name="code" rows="10" class="form-control"></textarea>
-  </div>
-  <button type="submit" class="btn btn-success">Save/Update Chunk</button>
-</form>
-<hr/>
-<h4>Existing Chunks</h4>
-{chunk_html}
-"""
-    return render_template_string(big_html, content=page_content)
-
-############################
-# CREATE EPHEMERAL ROUTES
-############################
-
-def generate_random_route(prefix="chunk_"):
-    suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
-    return prefix + suffix
-
-@app.route('/loader_create')
-def loader_create():
-    if environment_check():
-        return "Suspicious environment. Aborting ephemeral route creation.", 403
-
-    chunks = MainScript.query.order_by(MainScript.chunk_index.asc()).all()
-    if not chunks:
-        return "No script chunks found. Add some in loader_admin."
-
-    route_list = ""
-    for c in chunks:
-        route_name = generate_random_route(f"chunk_{c.chunk_index}_")
-        token_str = secrets.token_hex(16)
-        er = EphemeralRoute(
-            route_name=route_name,
-            token=token_str,
-            chunk_index=c.chunk_index,
-            created_at=datetime.utcnow(),
-            expires_in=120,
-            single_use=True
-        )
-        db.session.add(er)
-        db.session.commit()
-        route_list += f"<li>Chunk #{c.chunk_index}: /{route_name}?key=YOUR_KEY&hwid=YOUR_HWID&token={token_str}</li>"
-
-    page_content = f"""
-<h3>Ephemeral Loader Routes Created</h3>
-<ul>{route_list}</ul>
-<p>They expire in 120 seconds, single-use. 
-Call them in ascending chunk index order, e.g. chunk_1, chunk_2, etc.</p>
-"""
-    return render_template_string(big_html, content=page_content)
-
-############################
-# CATCH-ALL LOADER
-############################
-
-@app.route('/<path:loader_route>')
-def loader_catch_all(loader_route):
-    """
-    If loader_route matches EphemeralRoute, we do multi-step logic:
-      environment checks, ban checks, ephemeral token check,
-      triple base64 code, illusions, single use, etc.
-    """
-    er = EphemeralRoute.query.filter_by(route_name=loader_route).first()
-    if not er:
-        return "404 Not Found", 404
-
-    # environment check
-    if environment_check():
-        log_usage(er.route_name, request.remote_addr, suspicious=True)
-        return "Suspicious environment. Aborting route usage.", 403
-
-    # ban check
-    user_hwid = request.args.get('hwid', '')
-    if is_banned(request.remote_addr, user_hwid):
-        log_usage(er.route_name, request.remote_addr, suspicious=True)
-        return "You are banned from using this service.", 403
-
-    # expiry check
-    delta = (datetime.utcnow() - er.created_at).total_seconds()
-    if delta > er.expires_in:
-        log_usage(er.route_name, request.remote_addr, suspicious=True)
-        return "Ephemeral route expired", 403
-
-    # token check
-    user_token = request.args.get('token', '')
-    if user_token != er.token:
-        log_usage(er.route_name, request.remote_addr, suspicious=True)
-        return "Invalid token", 403
-
-    # key check
-    user_key = request.args.get('key', '')
-    if not user_key:
-        log_usage(er.route_name, request.remote_addr, suspicious=True)
-        return "Missing key param", 400
-
-    kobj = Key.query.filter_by(value=user_key).first()
-    if not kobj:
-        log_usage(er.route_name, request.remote_addr, suspicious=True)
-        return "Invalid key", 403
-    if kobj.expires_at and datetime.utcnow() > kobj.expires_at:
-        log_usage(er.route_name, request.remote_addr, suspicious=True)
-        return "Key expired", 403
-
-    # get chunk code
-    ms = MainScript.query.filter_by(chunk_index=er.chunk_index).first()
-    if not ms:
-        log_usage(er.route_name, request.remote_addr, suspicious=True)
-        return "No script chunk found for this index", 500
-
-    # triple base64 + illusions
-    import base64
-    step1 = base64.b64encode(ms.code.encode()).decode()
-    step2 = base64.b64encode(step1.encode()).decode()
-    step3 = base64.b64encode(step2.encode()).decode()
-
-    illusionsA = secrets.token_urlsafe(8)
-    illusionsB = secrets.token_urlsafe(8)
-
-    final_lua = f"""
--- environment check in-lua
-if hookfunction or debug.setupvalue or hookmetamethod then
-    return print("Suspicious environment, aborting chunk.")
-end
-
-local step3 = "{step3}"
-local s2 = game:GetService("HttpService"):Base64Decode(step3)
-local s1 = game:GetService("HttpService"):Base64Decode(s2)
-local final = game:GetService("HttpService"):Base64Decode(s1)
-
--- illusions
-local illusionsA = "{illusionsA}"
-local illusionsB = "{illusionsB}"
-
-loadstring(final)()
-"""
-
-    # single use
-    if er.single_use:
-        db.session.delete(er)
-        db.session.commit()
-
-    log_usage(er.route_name, request.remote_addr, suspicious=False)
-    return Response(final_lua, mimetype='text/plain')
-
-############################
-# MAIN
-############################
-
-with app.app_context():
-    db.create_all()
-    seed_data()
-
-if __name__ == '__main__':
-    app.run(host="0.0.0.0", debug=True, port=5000)
+        content += f"<li>Key {k.value}, HWID={k.hwid}, Expires={exp_str}</li>"
