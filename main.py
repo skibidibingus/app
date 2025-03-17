@@ -745,6 +745,224 @@ def delete_key(key_id):
 with app.app_context():
     db.create_all()
     seed_data()
-
+################################## start
 if __name__ == '__main__':
     app.run(host="0.0.0.0", debug=True, port=5000)
+<li onclick="window.location.href='/loader_admin'">
+  <i class="bi bi-file-earmark-lock"></i>
+  <span>Loader</span>
+</li>
+############################################################
+# LOADER ADMIN PAGE (like "LuaArmor" style)
+############################################################
+@app.route('/loader_admin', methods=['GET','POST'])
+def loader_admin():
+    """
+    Manage the main script in multiple chunks (like chunk_index=1,2,...).
+    For real Luarmor-level protection, you'd run each chunk 
+    through a robust Lua obfuscator externally.
+    """
+    # Let's assume you have a MainScript model with fields:
+    #   chunk_index (int)
+    #   code (text)
+    #   updated_at (datetime)
+    # You can store as many chunks as you want.
+
+    if request.method == 'POST':
+        # If user is adding/updating a chunk
+        chunk_idx = int(request.form.get('chunk_index', 1))
+        code = request.form.get('code', '')
+        ms = MainScript.query.filter_by(chunk_index=chunk_idx).first()
+        if ms:
+            ms.code = code
+            ms.updated_at = datetime.utcnow()
+        else:
+            ms = MainScript(chunk_index=chunk_idx, code=code, updated_at=datetime.utcnow())
+            db.session.add(ms)
+        db.session.commit()
+        flash(f"Chunk #{chunk_idx} updated or created!", "success")
+        return redirect(url_for('loader_admin'))
+
+    # Display existing chunks
+    chunks = MainScript.query.order_by(MainScript.chunk_index.asc()).all()
+    chunk_list_html = ""
+    for c in chunks:
+        chunk_list_html += f"<h5>Chunk #{c.chunk_index}</h5><pre>{c.code}</pre><hr>"
+
+    page_html = f"""
+<h3>Loader Admin</h3>
+<p>This page manages the script in multiple chunks. 
+For strong security, also obfuscate each chunk externally.</p>
+
+<form method="POST">
+  <div class="form-group">
+    <label>Chunk Index</label>
+    <input type="number" name="chunk_index" class="form-control" value="1" />
+  </div>
+  <div class="form-group">
+    <label>Lua Code (obfuscated if possible)</label>
+    <textarea name="code" rows="10" class="form-control"></textarea>
+  </div>
+  <button type="submit" class="btn btn-success btn-sm">Save Chunk</button>
+</form>
+<hr/>
+<h4>Current Chunks</h4>
+{chunk_list_html}
+"""
+    return render_template_string(big_html, page='loader_admin', dashboard_content=page_html)
+
+
+############################################################
+# CREATE EPHEMERAL ROUTES FOR THE LOADER (multi-step approach)
+############################################################
+@app.route('/loader_create')
+def loader_create():
+    """
+    This route dynamically creates ephemeral routes for each chunk 
+    in the MainScript. Each route is short-lived, single-use, 
+    and requires a token, plus ?key=... & ?hwid=... in the query.
+    The user calls them in ascending chunk_index order.
+    """
+    # environment check
+    if environment_check():
+        return "Suspicious environment. Aborting ephemeral route creation.", 403
+
+    # Suppose your MainScript has multiple chunks
+    chunks = MainScript.query.order_by(MainScript.chunk_index.asc()).all()
+    if not chunks:
+        return "No script chunks found. Add some in /loader_admin."
+
+    route_infos = []
+    for c in chunks:
+        route_name = generate_random_route(f"chunk_{c.chunk_index}_")
+        token_str = secrets.token_hex(16)
+        # ephemeral route DB row
+        er = EphemeralRoute(
+            route_name=route_name,
+            token=token_str,
+            stage=1,               # or stage=c.chunk_index, if you prefer
+            chunk_index=c.chunk_index,
+            created_at=datetime.utcnow(),
+            expires_in=120,
+            single_use=True
+        )
+        db.session.add(er)
+        db.session.commit()
+        route_infos.append((c.chunk_index, route_name, token_str))
+
+    # Show them to the admin
+    route_list = ""
+    for idx, rname, tkn in route_infos:
+        route_list += f"<li>Chunk #{idx}: /{rname}?key=YOUR_KEY&hwid=YOUR_HWID&token={tkn}</li>"
+
+    page_html = f"""
+<h3>Ephemeral Loader Routes Created</h3>
+<ul>
+{route_list}
+</ul>
+<p>They expire in 120 seconds, single-use. The user must call them in ascending chunk index order.
+If you want to embed chunk2 route inside chunk1, you'll do that in the chunk code itself.</p>
+"""
+    return render_template_string(big_html, page='loader_create', dashboard_content=page_html)
+
+
+############################################################
+# CATCH-ALL FOR LOADER ROUTES
+############################################################
+@app.route('/<path:loader_route>')
+def loader_catch_all(loader_route):
+    """
+    If loader_route matches an EphemeralRoute, we do the multi-step logic:
+      - environment checks
+      - ban checks
+      - ephemeral token checks
+      - fetch the chunk code from MainScript
+      - triple base64 or any advanced measure
+      - illusions / partial server logic
+      - single-use route if desired
+    """
+    er = EphemeralRoute.query.filter_by(route_name=loader_route).first()
+    if not er:
+        return "404 Not Found", 404
+
+    # environment check
+    if environment_check():
+        # log usage as suspicious
+        log_usage(er.route_name, request.remote_addr, suspicious=True)
+        return "Suspicious environment. Aborting loader route usage.", 403
+
+    # check ban
+    user_hwid = request.args.get('hwid', '')
+    if is_banned(request.remote_addr, user_hwid):
+        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        return "You are banned from using this service.", 403
+
+    # check expiry
+    delta = (datetime.utcnow() - er.created_at).total_seconds()
+    if delta > er.expires_in:
+        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        return "Ephemeral route expired", 403
+
+    # check token
+    user_token = request.args.get('token', '')
+    if user_token != er.token:
+        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        return "Invalid token for ephemeral route", 403
+
+    # check key param
+    user_key = request.args.get('key', '')
+    if not user_key:
+        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        return "Missing key param", 400
+
+    # validate key
+    kobj = Key.query.filter_by(value=user_key).first()
+    if not kobj:
+        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        return "Invalid key", 403
+    if kobj.expires_at and datetime.utcnow() > kobj.expires_at:
+        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        return "Key expired", 403
+
+    # get the chunk from MainScript
+    chunk_idx = er.chunk_index
+    ms = MainScript.query.filter_by(chunk_index=chunk_idx).first()
+    if not ms:
+        log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=True)
+        return "No script chunk found for this index", 500
+
+    # triple base64 + illusions
+    import base64
+    step1 = base64.b64encode(ms.code.encode()).decode()
+    step2 = base64.b64encode(step1.encode()).decode()
+    step3 = base64.b64encode(step2.encode()).decode()
+
+    illusionsA = secrets.token_urlsafe(8)
+    illusionsB = secrets.token_urlsafe(8)
+
+    final_lua = f"""
+-- environment check in-lua
+if hookfunction or debug.setupvalue or hookmetamethod then
+    return print("Suspicious environment, aborting chunk.")
+end
+
+local step3 = "{step3}"
+local s2 = game:GetService("HttpService"):Base64Decode(step3)
+local s1 = game:GetService("HttpService"):Base64Decode(s2)
+local final = game:GetService("HttpService"):Base64Decode(s1)
+
+-- illusions
+local illusionsA = "{illusionsA}"
+local illusionsB = "{illusionsB}"
+
+loadstring(final)()
+"""
+
+    # single use
+    if er.single_use:
+        db.session.delete(er)
+        db.session.commit()
+
+    # log usage normal
+    log_usage(er.route_name, request.remote_addr, user_hwid, suspicious=False)
+    return Response(final_lua, mimetype='text/plain')
