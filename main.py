@@ -823,12 +823,8 @@ class MainScript(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class EphemeralRoute(db.Model):
-    """
-    Short-lived route for each chunk. 
-    route_name = random string, token = random hex, 
-    chunk_index = which chunk to serve, 
-    single_use = if True, we delete it after usage
-    """
+    __tablename__ = "ephemeral_routes_v2"  # new name to avoid conflict
+
     id = db.Column(db.Integer, primary_key=True)
     route_name = db.Column(db.String(50), unique=True, nullable=False)
     token = db.Column(db.String(64), nullable=False)
@@ -836,6 +832,7 @@ class EphemeralRoute(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     expires_in = db.Column(db.Integer, default=120)
     single_use = db.Column(db.Boolean, default=True)
+
 
 ########################################
 # DB init & seed
