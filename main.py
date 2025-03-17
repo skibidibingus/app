@@ -746,27 +746,20 @@ with app.app_context():
     db.create_all()
     seed_data()
 ################################## start
-if __name__ == '__main__':
-    app.run(host="0.0.0.0", debug=True, port=5000)
-<li onclick="window.location.href='/loader_admin'">
-  <i class="bi bi-file-earmark-lock"></i>
-  <span>Loader</span>
-</li>
-############################################################
-# LOADER ADMIN PAGE (like "LuaArmor" style)
-############################################################
+page_html = """
+<!doctype html>
+<html>
+  <body>
+    <ul>
+      <li onclick="window.location.href='/loader_admin'">Loader Admin</li>
+    </ul>
+  </body>
+</html>
+"""
+
 @app.route('/loader_admin', methods=['GET','POST'])
 def loader_admin():
-    """
-    Manage the main script in multiple chunks (like chunk_index=1,2,...).
-    For real Luarmor-level protection, you'd run each chunk 
-    through a robust Lua obfuscator externally.
-    """
-    # Let's assume you have a MainScript model with fields:
-    #   chunk_index (int)
-    #   code (text)
-    #   updated_at (datetime)
-    # You can store as many chunks as you want.
+    return "Loader Admin Page!"
 
     if request.method == 'POST':
         # If user is adding/updating a chunk
