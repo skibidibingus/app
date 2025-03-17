@@ -745,66 +745,6 @@ def delete_key(key_id):
 with app.app_context():
     db.create_all()
     seed_data()
-import os
-import random
-import string
-import secrets
-from datetime import datetime, timedelta
-from flask import Flask, request, redirect, url_for, flash, Response
-from flask import render_template_string
-from flask_sqlalchemy import SQLAlchemy
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SESSION_SECRET', 'CHANGE_THIS')
-
-DATABASE_URL = os.environ.get('DATABASE_URL')
-if DATABASE_URL:
-    app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
-else:
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///eaglehub_complex.db'
-
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
-
-########################################
-# Existing Models from your code
-########################################
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-class Project(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), unique=True, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-class Script(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=False)
-    name = db.Column(db.String(100), nullable=False)
-    version = db.Column(db.String(20), nullable=True)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-class BlockedIP(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    ip_address = db.Column(db.String(50), nullable=False)
-    reason = db.Column(db.String(200), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-class KillSwitch(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    active = db.Column(db.Boolean, default=False)
-
-class Revenue(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    month = db.Column(db.String(20), nullable=False)
-    amount = db.Column(db.Integer, nullable=False)
-
-class Key(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    value = db.Column(db.String(64), unique=True, nullable=False)
-    hwid = db.Column(db.String(128), nullable=True)
-    expires_at = db.Column(db.DateTime, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
+if __name__ == '__main__':
+    app.run(host="0.0.0.0", debug=True, port=5000)
